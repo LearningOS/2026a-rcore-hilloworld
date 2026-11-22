@@ -9,7 +9,7 @@ pub struct TaskManager {
     ready_queue: VecDeque<Arc<TaskControlBlock>>,
 }
 
-/// A simple FIFO scheduler.
+/// A stride scheduler: always pick the task with the smallest `pass`.
 impl TaskManager {
     ///Creat an empty TaskManager
     pub fn new() -> Self {
@@ -19,11 +19,40 @@ impl TaskManager {
     }
     /// Add process back to ready queue
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
+        // A fresh process should not be able to starve the others: start it
+        // from the current minimum pass instead of 0.
+        let min_pass = self
+            .ready_queue
+            .iter()
+            .map(|t| t.inner_exclusive_access().pass)
+            .min();
+        if let Some(min_pass) = min_pass {
+            let mut inner = task.inner_exclusive_access();
+            if inner.pass < min_pass {
+                inner.pass = min_pass;
+            }
+        }
         self.ready_queue.push_back(task);
     }
-    /// Take a process out of the ready queue
+    /// Take the process with the smallest pass out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        let mut selected: Option<usize> = None;
+        let mut min_pass = usize::MAX;
+        for (index, task) in self.ready_queue.iter().enumerate() {
+            let pass = task.inner_exclusive_access().pass;
+            if pass < min_pass {
+                min_pass = pass;
+                selected = Some(index);
+            }
+        }
+        let index = selected?;
+        let task = self.ready_queue.remove(index)?;
+        // Charge one stride to the task which is about to run.
+        {
+            let mut inner = task.inner_exclusive_access();
+            inner.pass += inner.stride;
+        }
+        Some(task)
     }
 }
 

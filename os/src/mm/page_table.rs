@@ -162,14 +162,24 @@ impl PageTable {
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+    translated_byte_buffer_try(token, ptr, len).expect("unmapped user pointer")
+}
+
+/// Same as [`translated_byte_buffer`], but returns `None` if any page in the
+/// range is not mapped instead of panicking.
+pub fn translated_byte_buffer_try(
+    token: usize,
+    ptr: *const u8,
+    len: usize,
+) -> Option<Vec<&'static mut [u8]>> {
     let page_table = PageTable::from_token(token);
     let mut start = ptr as usize;
-    let end = start + len;
+    let end = start.checked_add(len)?;
     let mut v = Vec::new();
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).unwrap().ppn();
+        let ppn = page_table.translate(vpn)?.ppn();
         vpn.step();
         let mut end_va: VirtAddr = vpn.into();
         end_va = end_va.min(VirtAddr::from(end));
@@ -180,7 +190,7 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         }
         start = end_va.into();
     }
-    v
+    Some(v)
 }
 
 /// Translate&Copy a ptr[u8] array end with `\0` to a `String` Vec through page table

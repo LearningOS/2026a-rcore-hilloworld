@@ -1,8 +1,8 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{BIG_STRIDE, DEFAULT_PRIORITY, TRAP_CONTEXT_BASE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -68,6 +68,15 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Stride scheduling priority (>= 2)
+    pub priority: usize,
+
+    /// Stride value derived from priority
+    pub stride: usize,
+
+    /// Accumulated pass value used by the stride scheduler
+    pub pass: usize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +127,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    priority: DEFAULT_PRIORITY,
+                    stride: BIG_STRIDE / DEFAULT_PRIORITY,
+                    pass: 0,
                 })
             },
         };
@@ -191,6 +203,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority: parent_inner.priority,
+                    stride: parent_inner.stride,
+                    pass: parent_inner.pass,
                 })
             },
         });
@@ -235,6 +250,27 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// Set the stride-scheduling priority; valid values are `>= 2`.
+    pub fn set_priority(&self, prio: isize) -> isize {
+        if prio < 2 {
+            return -1;
+        }
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = prio as usize;
+        inner.stride = BIG_STRIDE / prio as usize;
+        prio
+    }
+
+    /// Map a new area in this task's address space.
+    pub fn mmap(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) -> bool {
+        self.inner_exclusive_access().memory_set.mmap(start, end, permission)
+    }
+
+    /// Unmap an area from this task's address space.
+    pub fn munmap(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        self.inner_exclusive_access().memory_set.munmap(start, end)
     }
 }
 

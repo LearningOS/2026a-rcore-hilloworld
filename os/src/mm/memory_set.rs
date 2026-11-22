@@ -300,6 +300,46 @@ impl MemorySet {
             false
         }
     }
+
+    /// Whether `[start_vpn, end_vpn)` intersects any mapped area.
+    fn overlaps(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        self.areas
+            .iter()
+            .any(|area| start_vpn < area.vpn_range.get_end() && area.vpn_range.get_start() < end_vpn)
+    }
+
+    /// Map a fresh, lazily-zeroed user area; fails on conflict or empty range.
+    pub fn mmap(&mut self, start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) -> bool {
+        if start_va.page_offset() != 0 {
+            return false;
+        }
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        if start_vpn >= end_vpn || self.overlaps(start_vpn, end_vpn) {
+            return false;
+        }
+        self.insert_framed_area(start_va, end_va, permission);
+        true
+    }
+
+    /// Unmap an area; it must match a mapped area exactly.
+    pub fn munmap(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        if start_va.page_offset() != 0 {
+            return false;
+        }
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        let found = self.areas.iter().position(|area| {
+            area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn
+        });
+        if let Some(index) = found {
+            let mut area = self.areas.remove(index);
+            area.unmap(&mut self.page_table);
+            true
+        } else {
+            false
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
