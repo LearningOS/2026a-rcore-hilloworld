@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -56,6 +56,7 @@ impl OSInode {
 }
 
 lazy_static! {
+    /// The inode of the root directory of the filesystem
     pub static ref ROOT_INODE: Arc<Inode> = {
         let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
         Arc::new(EasyFileSystem::root_inode(&efs))
@@ -144,6 +145,21 @@ impl File for OSInode {
             total_read_size += read_size;
         }
         total_read_size
+    }
+    fn stat(&self) -> Stat {
+        let inner = self.inner.exclusive_access();
+        let inode = &inner.inode;
+        Stat {
+            dev: 0,
+            ino: inode.inode_id() as u64,
+            mode: if inode.is_file() {
+                StatMode::FILE
+            } else {
+                StatMode::DIR
+            },
+            nlink: inode.nlink(),
+            pad: [0; 7],
+        }
     }
     fn write(&self, buf: UserBuffer) -> usize {
         let mut inner = self.inner.exclusive_access();

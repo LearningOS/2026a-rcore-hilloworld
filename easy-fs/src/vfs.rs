@@ -155,6 +155,106 @@ impl Inode {
             v
         })
     }
+    /// Get the id of the inode
+    pub fn inode_id(&self) -> u32 {
+        let fs = self.fs.lock();
+        fs.get_inode_id(self.block_id as u32, self.block_offset)
+    }
+    /// Get the number of hard links of the inode
+    pub fn nlink(&self) -> u32 {
+        self.read_disk_inode(|disk_inode| disk_inode.nlink)
+    }
+    /// Whether the inode is a file
+    pub fn is_file(&self) -> bool {
+        self.read_disk_inode(|disk_inode| disk_inode.is_file())
+    }
+    /// Create a hard link `name` in this directory pointing to `inode`.
+    pub fn link(&self, name: &str, inode: &Arc<Inode>) -> Option<usize> {
+        let mut fs = self.fs.lock();
+        // the name must not exist yet
+        if self
+            .read_disk_inode(|dir_inode| self.find_inode_id(name, dir_inode))
+            .is_some()
+        {
+            return None;
+        }
+        let inode_id = fs.get_inode_id(inode.block_id as u32, inode.block_offset);
+        // increment the link count of the target inode (its own block cache)
+        inode.modify_disk_inode(|disk_inode| disk_inode.nlink += 1);
+        // append a directory entry in this directory
+        self.modify_disk_inode(|dir_inode| {
+            let file_count = (dir_inode.size as usize) / DIRENT_SZ;
+            let new_size = ((file_count + 1) * DIRENT_SZ) as u32;
+            self.increase_size(new_size, dir_inode, &mut fs);
+            let dirent = DirEntry::new(name, inode_id);
+            dir_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+        block_cache_sync_all();
+        Some(inode_id as usize)
+    }
+    /// Remove the hard link `name` from this directory; returns the remaining
+    /// link count of the target inode.
+    pub fn unlink(&self, name: &str) -> Option<usize> {
+        let mut fs = self.fs.lock();
+        let inode_id = self.read_disk_inode(|dir_inode| self.find_inode_id(name, dir_inode))?;
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        let target = Inode::new(
+            block_id,
+            block_offset,
+            self.fs.clone(),
+            self.block_device.clone(),
+        );
+        // decrement nlink first, in its own block cache lock
+        let nlink = target.modify_disk_inode(|disk_inode| {
+            if disk_inode.nlink > 0 {
+                disk_inode.nlink -= 1;
+            }
+            disk_inode.nlink
+        });
+        // remove the directory entry: move the last entry into its slot
+        self.modify_disk_inode(|dir_inode| {
+            let file_count = (dir_inode.size as usize) / DIRENT_SZ;
+            let mut slot = None;
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    dir_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    slot = Some(i);
+                    break;
+                }
+            }
+            let slot = slot.expect("unlink: entry disappeared");
+            let last = file_count - 1;
+            if slot != last {
+                let mut last_dirent = DirEntry::empty();
+                assert_eq!(
+                    dir_inode.read_at(
+                        last * DIRENT_SZ,
+                        last_dirent.as_bytes_mut(),
+                        &self.block_device
+                    ),
+                    DIRENT_SZ,
+                );
+                dir_inode.write_at(
+                    slot * DIRENT_SZ,
+                    last_dirent.as_bytes(),
+                    &self.block_device,
+                );
+            }
+            // Shrink the directory by one entry. The block itself is left
+            // allocated: this lab allows not reclaiming it.
+            dir_inode.size -= DIRENT_SZ as u32;
+        });
+        block_cache_sync_all();
+        Some(nlink as usize)
+    }
     /// Read data from current inode
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
         let _fs = self.fs.lock();

@@ -3,7 +3,7 @@ use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -234,6 +234,18 @@ impl TaskControlBlock {
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+
+    /// Map a new area in this task's address space.
+    pub fn mmap(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) -> bool {
+        self.inner_exclusive_access()
+            .memory_set
+            .mmap(start, end, permission)
+    }
+
+    /// Unmap an area from this task's address space.
+    pub fn munmap(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        self.inner_exclusive_access().memory_set.munmap(start, end)
     }
 
     /// change the location of the program break. return None if failed.
