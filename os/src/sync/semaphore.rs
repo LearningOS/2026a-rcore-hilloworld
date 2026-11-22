@@ -29,6 +29,16 @@ impl Semaphore {
         }
     }
 
+    /// Number of currently available resources (never negative).
+    pub fn available(&self) -> isize {
+        let inner = self.inner.exclusive_access();
+        if inner.count > 0 {
+            inner.count
+        } else {
+            0
+        }
+    }
+
     /// up operation of semaphore
     pub fn up(&self) {
         trace!("kernel: Semaphore::up");
